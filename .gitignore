@@ -1,0 +1,59 @@
+# Secrets and local environment files
+.env
+.env.*
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+pytest.ini
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Node / frontend builds
+node_modules/
+dist/
+build/
+.cache/
+.vite/
+*.tsbuildinfo
+vite.config.*.timestamp-*
+*-debug.log*
+logs/
+*.log
+.tmp-*
+
+# Project generated data and local databases
+backend/generated/
+backend/backend/generated/
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/trusttech.db
+frontend/AGENTS.md
+frontend/CLAUDE.md
+frontend/.gitignore
+frontend/.gitattributes
+frontend/.figma/make
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
