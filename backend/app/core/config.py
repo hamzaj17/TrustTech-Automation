@@ -26,7 +26,11 @@ class Settings(BaseSettings):
         default="stable-image-core",
         validation_alias=AliasChoices("STABILITY_IMAGE_MODEL", "STABILITY_MODEL"),
     )
+    cloudflare_worker_url: str | None = Field(default=None, validation_alias="CLOUDFLARE_WORKER_URL")
+    cloudflare_api_key: str | None = Field(default=None, validation_alias="CLOUDFLARE_API_KEY")
     ai_generation_mode: str = Field(default="mock", validation_alias="AI_GENERATION_MODE")
+    # Directory where generated images are saved (relative to backend root).
+    # This resolves to: <backend-root>/backend/generated/images
     generated_images_dir: str = "backend/generated/images"
     social_publish_mode: str = Field(default="mock", validation_alias="SOCIAL_PUBLISH_MODE")
     auto_publish_platforms: str = Field(default="manual", validation_alias="AUTO_PUBLISH_PLATFORMS")
@@ -44,3 +48,41 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# If CLOUDFLARE_API_KEY or CLOUDFLARE_WORKER_URL are not provided via env,
+# attempt to read them from the frontend `ImageGenerator.jsx` file (best-effort).
+try:
+    if not settings.cloudflare_api_key or not settings.cloudflare_worker_url:
+        from pathlib import Path
+        import re
+
+        # Find the repository root by walking up until we find frontend/src/ImageGenerator.jsx
+        repo_root = None
+        p = Path(__file__).resolve()
+        for i in range(6):
+            candidate_root = p.parents[i]
+            candidate = candidate_root / "frontend" / "src" / "ImageGenerator.jsx"
+            if candidate.exists():
+                repo_root = candidate_root
+                break
+
+        if repo_root is not None:
+            candidate = repo_root / "frontend" / "src" / "ImageGenerator.jsx"
+            text = candidate.read_text(encoding="utf-8")
+
+            # Look for explicit constant assignments e.g. CLOUDFLARE_BEARER = "..." or export const CLOUDFLARE_BEARER = '...'
+            if not settings.cloudflare_api_key:
+                m = re.search(r'CLOUDFLARE_BEARER\s*=?\s*["\']([^"\']+)["\']', text)
+                if m:
+                    token = m.group(1).strip()
+                    if token:
+                        settings.cloudflare_api_key = token
+
+            # Look for worker URL constant assignment
+            if not settings.cloudflare_worker_url:
+                n = re.search(r'CLOUDFLARE_WORKER_URL\s*=?\s*["\'](https?://[^"\']+)["\']', text)
+                if n:
+                    settings.cloudflare_worker_url = n.group(1).strip()
+except Exception:
+    # Best-effort only; don't raise on failures reading frontend file
+    pass

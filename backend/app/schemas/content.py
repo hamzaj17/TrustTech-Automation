@@ -40,11 +40,13 @@ class ImagePromptResult(BaseModel):
 class ImageGenerateRequest(BaseModel):
     image_prompt: str = Field(min_length=1)
     draft_id: UUID | None = None
+    aspect_ratio: str | None = None
 
 
 class ImageResult(BaseModel):
     image_url: str
     image_path: str
+    credits_left: int | None = None
 
 
 class ContentDraftRead(BaseModel):
@@ -72,6 +74,19 @@ class ContentDraftRead(BaseModel):
 class ContentGenerateFullRequest(BaseModel):
     topic: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
+
+
+class ContentCreateRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=255)
+    caption: str | None = None
+    call_to_action: str | None = None
+    hashtags: list[str] | None = None
+    image_prompt: str | None = None
+    image_base64: str | None = None
+    image_suffix: str | None = None
+    platform: str | None = None
+    scheduled_for: datetime | None = None
+    publish_now: bool = Field(default=False)
 
 
 class ContentRejectRequest(BaseModel):

@@ -8,9 +8,13 @@ from app.core.config import settings
 
 
 def _generated_images_directory() -> Path:
-    directory = Path(settings.generated_images_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+  directory = Path(settings.generated_images_dir)
+  # If the configured path is relative, resolve it relative to the backend root.
+  if not directory.is_absolute():
+    backend_root = Path(__file__).resolve().parents[2]
+    directory = (backend_root / settings.generated_images_dir).resolve()
+  directory.mkdir(parents=True, exist_ok=True)
+  return directory
 
 
 def _svg_placeholder(image_prompt: str) -> str:
@@ -46,7 +50,9 @@ def _save_bytes(image_bytes: bytes, suffix: str) -> tuple[str, str]:
     file_path = directory / filename
     file_path.write_bytes(image_bytes)
     path_str = str(file_path)
-    return path_str, path_str
+    # Public URL path served by the backend static mount
+    url_path = f"/generated/images/{filename}"
+    return url_path, path_str
 
 
 def generate_mock_image(image_prompt: str) -> tuple[str, str]:

@@ -4,10 +4,12 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
+from pathlib import Path
 
 import requests
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+import logging
 
 from app.ai.captions import generate_caption
 from app.ai.hashtags import build_hashtags
@@ -18,6 +20,7 @@ from app.core.config import settings
 from app.models.brand_settings import BrandSettings
 from app.models.content import AIGenerationLog, ContentDraft, GeneratedTopic
 from app.schemas.content import ContentExportRead
+from app.schemas.content import ContentCreateRequest
 from app.social.publisher import publish_draft
 
 
@@ -163,6 +166,52 @@ def _stability_image_response(image_prompt: str, model: str) -> tuple[str, str]:
         raise RuntimeError(f"Stability API returned {response.status_code}: {error_payload}")
 
     return decode_base64_image(response.content)
+
+
+def _cloudflare_image_response(image_prompt: str, aspect_ratio: str | None = None) -> tuple[str, str]:
+    if not settings.cloudflare_worker_url or not settings.cloudflare_api_key:
+        raise RuntimeError("Cloudflare worker URL or API key is missing.")
+
+    try:
+        payload = {"prompt": image_prompt}
+        if aspect_ratio:
+            payload["aspect_ratio"] = aspect_ratio
+
+        response = requests.post(
+            settings.cloudflare_worker_url,
+            headers={
+                "Authorization": f"Bearer {settings.cloudflare_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json, image/*",
+            },
+            json=payload,
+            timeout=120,
+        )
+        response.raise_for_status()
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        # If worker returns an image binary directly, save with proper suffix
+        if content_type.startswith("image/"):
+            if "png" in content_type:
+                suffix = ".png"
+            elif "jpeg" in content_type or "jpg" in content_type:
+                suffix = ".jpg"
+            elif "webp" in content_type:
+                suffix = ".webp"
+            elif "gif" in content_type:
+                suffix = ".gif"
+            else:
+                suffix = ".png"
+            return decode_base64_image(response.content, suffix)
+
+        # Otherwise expect JSON with base64 'image' field
+        payload = response.json()
+        image_b64 = payload.get("image") or payload.get("image_base64")
+        if not image_b64:
+            raise RuntimeError(f"Cloudflare worker response missing image field: {payload}")
+        return decode_base64_image(image_b64)
+    except Exception as exc:
+        raise RuntimeError(f"Cloudflare worker image generation failed: {exc}") from exc
 
 
 def generate_topic_draft(db: Session, category: str | None) -> GeneratedTopic:
@@ -319,17 +368,71 @@ def generate_image_prompt_text(db: Session, topic: str, caption: str) -> str:
     return image_prompt
 
 
-def generate_image_asset(db: Session, image_prompt: str, draft: ContentDraft | None = None) -> tuple[str, str]:
+def _credits_file_path() -> str:
+    # store a local credits counter in backend/generated/credits.json (best-effort)
+    p = Path(__file__).resolve().parents[2] / "generated" / "credits.json"
+    return str(p)
+
+
+def get_remaining_credits_from_db() -> int:
+    p = Path(_credits_file_path())
+    try:
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(str(10000))
+            return 10000
+        text = p.read_text().strip()
+        return int(text) if text else 10000
+    except Exception:
+        return 10000
+
+
+def deduct_credits_in_db(amount: int) -> int:
+    p = Path(_credits_file_path())
+    try:
+        current = get_remaining_credits_from_db()
+        new = max(0, current - int(amount))
+        p.write_text(str(new))
+        return new
+    except Exception:
+        return get_remaining_credits_from_db()
+
+
+def generate_image_asset(db: Session, image_prompt: str, draft: ContentDraft | None = None, aspect_ratio: str | None = None) -> tuple[str, str, int]:
     provider = "mock"
     model = "svg-placeholder"
+    logger = logging.getLogger(__name__)
+    logger.info("generate_image_asset called: prompt=%s", (image_prompt[:120] if image_prompt else "(empty)"))
     try:
-        if settings.ai_generation_mode.lower() == "live" and settings.stability_api_key:
-            provider = "stability"
-            model = settings.stability_image_model.strip() or "stable-image-core"
-            image_url, image_path = _stability_image_response(image_prompt, model)
+        # Determine cost based on aspect ratio
+        if aspect_ratio in ("16:9", "9:16"):
+            cost = 173
+        else:
+            cost = 58
+
+        # Check credits before performing expensive operation
+        current_balance = get_remaining_credits_from_db()
+        if current_balance < cost:
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Insufficient credits for image generation")
+
+        if settings.ai_generation_mode.lower() == "live":
+            # Prefer Cloudflare worker endpoint if configured
+            if settings.cloudflare_worker_url and settings.cloudflare_api_key:
+                provider = "cloudflare_worker"
+                model = "cloudflare-worker"
+                logger.info("Using Cloudflare worker: %s", settings.cloudflare_worker_url)
+                image_url, image_path = _cloudflare_image_response(image_prompt, aspect_ratio)
+            elif settings.stability_api_key:
+                provider = "stability"
+                model = settings.stability_image_model.strip() or "stable-image-core"
+                logger.info("Using Stability API: model=%s", model)
+                image_url, image_path = _stability_image_response(image_prompt, model)
+            else:
+                image_url, image_path = generate_mock_image(image_prompt)
         else:
             image_url, image_path = generate_mock_image(image_prompt)
     except Exception as exc:
+        logger.exception("Image generation failed: %s", exc)
         if settings.ai_generation_mode.lower() == "live" and settings.stability_api_key:
             _raise_live_generation_error("Stability", "image generation", exc)
         provider = "mock"
@@ -346,6 +449,12 @@ def generate_image_asset(db: Session, image_prompt: str, draft: ContentDraft | N
             db.commit()
             db.refresh(draft)
 
+        # Deduct credits for successful generation
+        try:
+            remaining = deduct_credits_in_db(cost)
+        except Exception:
+            remaining = get_remaining_credits_from_db()
+
         _log_generation(
             db,
             generation_type="image",
@@ -354,7 +463,7 @@ def generate_image_asset(db: Session, image_prompt: str, draft: ContentDraft | N
             status="success",
             metadata={"image_prompt": image_prompt},
         )
-        return image_url, image_path
+        return image_url, image_path, remaining
     except Exception as exc:
         if draft is not None:
             draft.status = "failed"
@@ -419,6 +528,50 @@ def create_content_draft(
     return draft
 
 
+def create_content_draft_full(db: Session, payload: ContentCreateRequest) -> ContentDraft:
+    """Create a content draft from a frontend payload, optionally saving a base64 image."""
+    topic = payload.topic
+    caption = payload.caption
+    call_to_action = payload.call_to_action
+    hashtags = payload.hashtags or []
+    image_prompt = payload.image_prompt
+    image_url = None
+    image_path = None
+
+    # Save image if provided as base64
+    if payload.image_base64:
+        try:
+            suffix = payload.image_suffix or '.png'
+            image_url, image_path = decode_base64_image(payload.image_base64, suffix)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image data: {exc}")
+
+    draft = ContentDraft(
+        topic=topic,
+        caption=caption,
+        call_to_action=call_to_action,
+        hashtags=hashtags,
+        image_prompt=image_prompt,
+        image_url=image_url,
+        image_path=image_path,
+        platform=payload.platform,
+        status='draft',
+    )
+
+    # Handle scheduling / immediate publish
+    if payload.scheduled_for is not None:
+        draft.scheduled_for = payload.scheduled_for
+        draft.status = 'scheduled'
+    elif payload.publish_now:
+        draft.published_at = datetime.now(timezone.utc)
+        draft.status = 'published'
+
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
 def build_full_content(db: Session, topic: str | None, category: str | None) -> ContentDraft:
     _brand_settings_row(db)
     topic_row = ensure_topic_record(db, topic, category) if topic else generate_topic_draft(db, category)
@@ -433,7 +586,8 @@ def build_full_content(db: Session, topic: str | None, category: str | None) -> 
         hashtags=caption_bundle.hashtags,
         image_prompt=image_prompt,
     )
-    generate_image_asset(db, image_prompt, draft)
+    # Ignore credits value when called from the pipeline
+    image_url, image_path, _ = generate_image_asset(db, image_prompt, draft)
     _log_generation(
         db,
         generation_type="content_full",

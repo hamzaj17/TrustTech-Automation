@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -25,6 +26,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+    # Ensure generated images directory exists and mount it at /generated/images
+    from pathlib import Path
+
+    gen_dir = Path(settings.generated_images_dir)
+    if not gen_dir.is_absolute():
+        # Resolve relative to the backend folder (two parents up from this file is the backend folder)
+        backend_root = Path(__file__).resolve().parents[1]
+        gen_dir = (backend_root / settings.generated_images_dir).resolve()
+    gen_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/generated/images", StaticFiles(directory=str(gen_dir)), name="generated_images")
 
     @app.on_event("startup")
     def create_tables() -> None:

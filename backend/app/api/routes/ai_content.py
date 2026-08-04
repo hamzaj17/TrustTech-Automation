@@ -9,6 +9,7 @@ from app.ai.content_engine import (
     generate_image_asset,
     generate_image_prompt_text,
     generate_topic_draft,
+    create_content_draft_full,
     get_content_draft,
     approve_content_draft,
     export_content_draft,
@@ -33,6 +34,7 @@ from app.schemas.content import (
     ImagePromptGenerateRequest,
     ImagePromptResult,
     ImageResult,
+    ContentCreateRequest,
     TopicGenerateRequest,
     TopicRead,
 )
@@ -84,8 +86,19 @@ def generate_image_endpoint(
     draft = None
     if payload.draft_id is not None:
         draft = get_content_draft(db, str(payload.draft_id))
-    image_url, image_path = generate_image_asset(db, payload.image_prompt, draft)
-    return ImageResult(image_url=image_url, image_path=image_path)
+    # Pass aspect_ratio through; generate_image_asset now returns credits_left as third value
+    image_url, image_path, credits_left = generate_image_asset(db, payload.image_prompt, draft, payload.aspect_ratio)
+    return ImageResult(image_url=image_url, image_path=image_path, credits_left=credits_left)
+
+
+@router.post("/content", response_model=ContentDraftRead)
+def create_content_endpoint(
+    payload: ContentCreateRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> ContentDraft:
+    # Delegate to content engine to create and persist the draft
+    return create_content_draft_full(db, payload)
 
 
 @router.post("/content/generate-full", response_model=ContentDraftRead)
