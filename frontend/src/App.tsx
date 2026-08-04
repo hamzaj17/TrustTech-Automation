@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Login from './Login'
+import NewPost from './NewPost'
+import { CLOUDFLARE_WORKER_URL, CLOUDFLARE_BEARER } from './ImageGenerator'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1'
 
@@ -214,6 +216,11 @@ export default function App() {
   const [brand, setBrand] = useState<BrandSettings | null>(null)
   const [toast, setToast] = useState<Toast>(null)
   const [busy, setBusy] = useState('')
+  const [showNewPost, setShowNewPost] = useState(false)
+  const [previewVisible, setPreviewVisible] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null)
+  const [previewPrompt, setPreviewPrompt] = useState('')
 
   const metrics = useMemo(() => {
     const published = drafts.filter((d) => d.status.includes('published')).length
@@ -276,12 +283,8 @@ export default function App() {
   }
 
   async function generatePost() {
-    await runAction('Generate post', async () => {
-      await api<ContentDraft>('/ai/content/generate-full', {
-        method: 'POST',
-        body: JSON.stringify({ category: 'automation' }),
-      })
-    })
+    // Open the New Post UI instead of immediately running full generation
+    setShowNewPost(true)
   }
 
   async function runScheduler() {
@@ -323,6 +326,106 @@ export default function App() {
     })
   }
 
+  async function generatePreviewForPrompt(prompt: string) {
+    if (!prompt || !prompt.trim()) return alert('No prompt available for preview.')
+    setPreviewVisible(true)
+    setPreviewPrompt(prompt)
+    setPreviewLoading(true)
+    setPreviewImageSrc(null)
+    // Prefer backend-generated file so preview matches saved local file.
+    try {
+      const result = await api<{ image_url: string; image_path: string; credits_left?: number }>("/ai/images/generate", {
+        method: "POST",
+        body: JSON.stringify({ image_prompt: prompt }),
+      })
+      if (result?.image_url) {
+        try {
+          const apiOrigin = new URL(API_BASE_URL).origin
+          const absolute = result.image_url.startsWith('http') ? result.image_url : `${apiOrigin}${result.image_url}`
+          setPreviewImageSrc(absolute)
+        } catch {
+          setPreviewImageSrc(result.image_url)
+        }
+        setPreviewLoading(false)
+        return
+      } else {
+        console.warn('Backend returned no image_url, falling back to Cloudflare')
+      }
+    } catch (err) {
+      console.warn('Backend preview failed, falling back to Cloudflare:', err)
+    }
+
+    // Fallback: try Cloudflare worker directly (only if backend unavailable)
+    try {
+      const cfResp = await fetch(CLOUDFLARE_WORKER_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CLOUDFLARE_BEARER}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json, image/*',
+        },
+        body: JSON.stringify({ prompt }),
+      })
+
+      if (!cfResp.ok) throw new Error(`Cloudflare worker returned ${cfResp.status}`)
+
+      const ct = cfResp.headers.get('Content-Type') || ''
+      if (ct.startsWith('image/')) {
+        const blob = await cfResp.blob()
+        const url = URL.createObjectURL(blob)
+        setPreviewImageSrc(url)
+        setPreviewLoading(false)
+        return
+      }
+
+      const data = await cfResp.json()
+      if (data.image) {
+        setPreviewImageSrc(`data:image/png;base64,${data.image}`)
+        setPreviewLoading(false)
+        return
+      }
+    } catch (err) {
+      console.warn('Cloudflare preview also failed:', err)
+      alert('Failed to generate preview image.')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  function openPreviewForDraft(id: string) {
+    const d = drafts.find((x) => x.id === id)
+    if (!d) return
+    // If the draft already has an image URL saved by the backend, use it directly
+    if (d.image_url) {
+      try {
+        const apiOrigin = new URL(API_BASE_URL).origin
+        const absolute = d.image_url.startsWith('http') ? d.image_url : `${apiOrigin}${d.image_url}`
+        setPreviewImageSrc(absolute)
+        setPreviewPrompt(d.image_prompt ?? '')
+        setPreviewVisible(true)
+        setPreviewLoading(false)
+        return
+      } catch {
+        setPreviewImageSrc(d.image_url)
+        setPreviewPrompt(d.image_prompt ?? '')
+        setPreviewVisible(true)
+        setPreviewLoading(false)
+        return
+      }
+    }
+
+    // Otherwise fall back to generating a preview from the prompt
+    const p = d.image_prompt ?? d.caption ?? d.topic ?? ''
+    void generatePreviewForPrompt(p)
+  }
+
+  function closePreview() {
+    setPreviewVisible(false)
+    setPreviewImageSrc(null)
+    setPreviewPrompt('')
+    setPreviewLoading(false)
+  }
+
   async function mockPublish(id: string) {
     await runAction('Mock publish', async () => {
       await api<ContentDraft>(`/ai/content/${id}/publish-mock`, { method: 'POST' })
@@ -353,11 +456,11 @@ export default function App() {
           </div>
           <div style={{ fontSize: '11px', color: '#aaa', letterSpacing: '0.04em' }}>AUTOMATION PLATFORM</div>
         </div>
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <OutlineButton small onClick={generatePost} disabled={Boolean(busy)}>NEW POST</OutlineButton>
-          <OutlineButton accent small onClick={runScheduler} disabled={Boolean(busy)}>RUN SCHEDULER</OutlineButton>
-          <OutlineButton small color={C.rose} onClick={handleLogout}>LOGOUT</OutlineButton>
-        </div>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <OutlineButton small onClick={generatePost} disabled={Boolean(busy)}>NEW POST</OutlineButton>
+            <OutlineButton accent small onClick={runScheduler} disabled={Boolean(busy)}>RUN SCHEDULER</OutlineButton>
+            <OutlineButton small color={C.rose} onClick={handleLogout}>LOGOUT</OutlineButton>
+          </div>
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -372,6 +475,18 @@ export default function App() {
         </aside>
 
         <main style={{ flex: 1, overflowY: 'auto', padding: '40px 48px' }}>
+          {showNewPost ? (
+            <NewPost
+              onBack={() => { setShowNewPost(false); void loadData(); setActiveNav('DASHBOARD'); }}
+              onCreateDraft={(d: ContentDraft) => {
+                setDrafts((prev) => [d, ...prev])
+                setShowNewPost(false)
+                setActiveNav('CONTENT')
+                setToast({ kind: 'ok', message: 'Post added to recent content.' })
+              }}
+            />
+          ) : null}
+          <div style={{ display: showNewPost ? 'none' : undefined }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '26px' }}>
             <div>
               <h1 style={{ fontSize: '22px', fontWeight: 700, margin: 0 }}>{activeNav.charAt(0) + activeNav.slice(1).toLowerCase()}</h1>
@@ -404,7 +519,7 @@ export default function App() {
                 ))}
               </div>
               <SchedulerPanel scheduler={scheduler} onRun={runScheduler} onRetry={retryFailed} busy={Boolean(busy)} />
-              <ContentTable drafts={recentDrafts} title="RECENT CONTENT" onApprove={approveDraft} onReject={rejectDraft} onSchedule={scheduleDraft} onPublish={mockPublish} onExport={exportDraft} busy={Boolean(busy)} />
+              <ContentTable drafts={recentDrafts} title="RECENT CONTENT" onApprove={approveDraft} onReject={rejectDraft} onSchedule={scheduleDraft} onPublish={mockPublish} onExport={exportDraft} onPreview={openPreviewForDraft} busy={Boolean(busy)} />
             </>
           )}
 
@@ -427,7 +542,7 @@ export default function App() {
           )}
 
           {activeNav === 'CONTENT' && (
-            <ContentTable drafts={drafts} title="CONTENT DRAFTS" onApprove={approveDraft} onReject={rejectDraft} onSchedule={scheduleDraft} onPublish={mockPublish} onExport={exportDraft} busy={Boolean(busy)} />
+            <ContentTable drafts={drafts} title="CONTENT DRAFTS" onApprove={approveDraft} onReject={rejectDraft} onSchedule={scheduleDraft} onPublish={mockPublish} onExport={exportDraft} onPreview={openPreviewForDraft} busy={Boolean(busy)} />
           )}
 
           {activeNav === 'SETTINGS' && (
@@ -447,8 +562,30 @@ export default function App() {
               <div style={{ color: '#777', fontSize: '13px' }}>Analytics will become live after real social publishing APIs are connected.</div>
             </Panel>
           )}
+          </div>
         </main>
       </div>
+      {previewVisible && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div style={{ width: 'min(920px, 96%)', background: '#fff', border: '1px solid #000', borderRadius: '6px', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee' }}>
+              <div style={{ fontWeight: 700 }}>Image Preview</div>
+              <div>
+                <OutlineButton small onClick={closePreview}>CLOSE</OutlineButton>
+              </div>
+            </div>
+            <div style={{ padding: '16px', minHeight: '320px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fafafa' }}>
+              {previewLoading ? (
+                <div>Generating image…</div>
+              ) : previewImageSrc ? (
+                <img src={previewImageSrc} alt="preview" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '6px' }} />
+              ) : (
+                <div style={{ color: '#777' }}>No image available for this prompt.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -484,6 +621,7 @@ function ContentTable({
   onSchedule,
   onPublish,
   onExport,
+  onPreview,
   busy,
 }: {
   drafts: ContentDraft[]
@@ -493,6 +631,7 @@ function ContentTable({
   onSchedule: (id: string) => void
   onPublish: (id: string) => void
   onExport: (id: string) => void
+  onPreview: (id: string) => void
   busy: boolean
 }) {
   return (
@@ -515,6 +654,7 @@ function ContentTable({
                 <OutlineButton small color={C.amber} onClick={() => onSchedule(draft.id)} disabled={busy}>SCHEDULE</OutlineButton>
                 <OutlineButton small color={C.indigo} onClick={() => onExport(draft.id)} disabled={busy}>COPY</OutlineButton>
                 <OutlineButton small onClick={() => onPublish(draft.id)} disabled={busy}>PUBLISH</OutlineButton>
+                <OutlineButton small color={C.indigo} onClick={() => onPreview(draft.id)} disabled={busy}>PREVIEW</OutlineButton>
               </div>
             </div>
           ))}
