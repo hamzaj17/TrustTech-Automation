@@ -1,10 +1,10 @@
 # Secrets and local environment files
-# .env
-# .env.*
-# backend/.env
-# backend/.env.*
-# frontend/.env
-# frontend/.env.*
+.env
+.env.*
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
 backend/imagecheck.py
 
 # Python
