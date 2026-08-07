@@ -17,10 +17,10 @@ def create_app() -> FastAPI:
     app.state.scheduler = None
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
-        ],
+        # During development allow all origins so browser preflight (OPTIONS)
+        # requests from the dev server are accepted. Replace with a
+        # restricted list in production.
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

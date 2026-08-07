@@ -11,6 +11,9 @@ def start_background_scheduler() -> object | None:
         return None
 
     scheduler = BackgroundScheduler(timezone="UTC")
+    # Run the scheduler cycle on a multi-hour interval by default so
+    # content generation and publishing aren't triggered too frequently.
+    # Use minutes=1 only for short-lived development debugging if needed.
     scheduler.add_job(
         _run_cycle_with_new_session,
         trigger="interval",

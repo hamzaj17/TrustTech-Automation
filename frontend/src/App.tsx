@@ -476,15 +476,7 @@ export default function App() {
 
         <main style={{ flex: 1, overflowY: 'auto', padding: '40px 48px' }}>
           {showNewPost ? (
-            <NewPost
-              onBack={() => { setShowNewPost(false); void loadData(); setActiveNav('DASHBOARD'); }}
-              onCreateDraft={(d: ContentDraft) => {
-                setDrafts((prev) => [d, ...prev])
-                setShowNewPost(false)
-                setActiveNav('CONTENT')
-                setToast({ kind: 'ok', message: 'Post added to recent content.' })
-              }}
-            />
+            <NewPost onBack={() => { setShowNewPost(false); void loadData(); setActiveNav('DASHBOARD'); }} />
           ) : null}
           <div style={{ display: showNewPost ? 'none' : undefined }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '26px' }}>
