@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 export const CLOUDFLARE_WORKER_URL = "https://ai.zenoa.nz";
-export const CLOUDFLARE_BEARER = "M6Ap00pTok@n123";
+export const CLOUDFLARE_BEARER = "";
 
 function ImageGenerator() {
   const [prompt, setPrompt] = useState("");
